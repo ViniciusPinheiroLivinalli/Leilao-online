@@ -31,7 +31,7 @@ def thread_lances(conn):
                 with lock:
                     if valor > lance_atual:
                         lance_atual = valor
-                        tempo_restante = 60  # Reseta o cronômetro para 60 segundos a cada lance válido
+                        # tempo_restante = 60  # Reseta o cronômetro para 60 segundos a cada lance válido
                         enviar(conn, "eco", {"acao": f"Lance de R$ {valor:.2f} aceito!"})
                         enviar(conn, "lance", {"valor": lance_atual})
                     else:

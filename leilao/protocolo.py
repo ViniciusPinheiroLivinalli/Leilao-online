@@ -11,10 +11,10 @@ def enviar(sock, tipo, dados):
 
     cabecalho = struct.pack('!I', len(payload)) # Cria um cabeçalho de 4 bytes com o tamanho do payload (formato big-endian)
  
-    sock.sendall(cabecalho + payload) # Envia o cabeçalho e payload
+    sock.sendall(cabecalho + payload) 
 
 def receber(sock):
-    cabecalho = _ler_exato(sock, 4)
+    cabecalho = _ler_exato(sock, 4) # Lê os 4 bytes do cabeçalho para obter o tamanho do payload
     if not cabecalho:
         return None
 
