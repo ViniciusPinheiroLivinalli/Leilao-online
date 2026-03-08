@@ -8,10 +8,13 @@ from protocolo import enviar, receber
 lance_atual = 1000.0
 nome_item = "Banana"
 tempo_restante = 60
+cliente_ativo = True
 lock = threading.Lock()  # Protege acesso simultâneo
 
 def thread_lances(conn):
     global lance_atual
+    global tempo_restante
+    global cliente_ativo
 
     while True:
         try:
@@ -20,6 +23,8 @@ def thread_lances(conn):
             # Se receber None o cliente desconectou
             if not mensagem:
                 print("Cliente desconectado")
+                with lock:
+                    cliente_ativo = False
                 break
             tipo  = mensagem["tipo"]
             dados = mensagem["dados"]
@@ -31,9 +36,10 @@ def thread_lances(conn):
                 with lock:
                     if valor > lance_atual:
                         lance_atual = valor
-                        # tempo_restante = 60  # Reseta o cronômetro para 60 segundos a cada lance válido
+                        tempo_restante = 60  # Reseta o cronômetro para 60 segundos a cada lance válido
                         enviar(conn, "eco", {"acao": f"Lance de R$ {valor:.2f} aceito!"})
                         enviar(conn, "lance", {"valor": lance_atual})
+                        enviar(conn, "tempo", {"mensagem": f"Tempo resetado para 60s!"})
                     else:
                         enviar(conn, "erro", {
                             "mensagem": f"Lance inválido! O atual é R$ {lance_atual:.2f}"
@@ -57,6 +63,8 @@ def thread_lances(conn):
                         })
 
                 elif cmd == ":quit":
+                    with lock:
+                        cliente_ativo = False
                     enviar(conn, "info", {"mensagem": "Até logo!"})
                     print("Cliente saiu com :quit")
                     break
@@ -68,8 +76,11 @@ def thread_lances(conn):
 
 def thread_cronometro(conn):
     global tempo_restante
+    global cliente_ativo
 
     while True:
+        if not cliente_ativo:
+            break
         time.sleep(1)
 
         with lock:
