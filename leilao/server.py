@@ -3,6 +3,7 @@ import threading
 import time
 from datetime import datetime
 from protocolo import enviar, receber
+from banco import buscar_ou_criar, atualizar, carregar
 
 # Variáveis globais (memória compartilhada)
 lance_atual = 1000.0
@@ -10,6 +11,26 @@ nome_item = "Banana"
 tempo_restante = 60
 cliente_ativo = True
 lock = threading.Lock()  # Protege acesso simultâneo
+
+def identificar_cliente(conn):
+    # Pede o nome ao cliente
+    enviar(conn, "identificacao", {"mensagem": "Digite seu nome de usuário:"})
+
+    # Recebe o nome
+    msg = receber(conn)
+    nome = msg["dados"]["nome"].strip()
+
+    # Busca ou cria no banco
+    usuario, novo = buscar_ou_criar(nome)
+
+    # Responde com os dados do usuário
+    enviar(conn, "identificacao", {
+        "novo": novo,
+        "saldo": usuario["saldo"],
+        "itens": usuario["itens"]
+    })
+
+    return nome, usuario
 
 def thread_lances(conn):
     global lance_atual

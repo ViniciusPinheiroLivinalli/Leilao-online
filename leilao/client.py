@@ -2,6 +2,33 @@ import socket
 import threading
 from protocolo import enviar, receber
 
+def identificar(sock):
+    # Recebe o pedido de identificação do servidor
+    msg = receber(sock)
+    print(f"\n{msg['dados']['mensagem']}")
+
+    # Usuário digita o nome
+    nome = input(">> ").strip()
+    while not nome:
+        print("Nome não pode ser vazio!")
+        nome = input(">> ").strip()
+
+    # Envia o nome para o servidor
+    enviar(sock, "identificacao", {"nome": nome})
+
+    # Recebe a resposta com os dados do usuário
+    resposta = receber(sock)
+    dados = resposta["dados"]
+
+    if dados.get("novo"):
+        print(f"\n Bem vindo, {nome}! Você recebeu R$ 5000.00 de crédito.")
+    else:
+        print(f"\n Bem vindo de volta, {nome}!")
+        print(f"Saldo: R$ {dados['saldo']:.2f}")
+        print(f"Itens: {[i['nome'] for i in dados['itens']] or 'nenhum'}")
+
+    return nome
+
 # Thread 1 — Lê input do usuário e envia para o servidor 
 def thread_input(sock):
     while True:
@@ -93,23 +120,25 @@ def formatar(mensagem):
 # Main — Conecta ao servidor e dispara as threads 
 def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    
     try:
         sock.connect(('localhost', 9999))
     except ConnectionRefusedError:
-        print("Servidor não encontrado. Verifique se ele está rodando.")
+        print("Servidor não encontrado.")
         return
 
-    # Recebe e imprime a mensagem de boas vindas
+    # Identificação antes de tudo
+    nome = identificar(sock)
+
+    # Recebe boas vindas com dados do leilão
     boas_vindas = receber(sock)
     dados = boas_vindas["dados"]
     print(f"\n{dados['horario']}: {dados['mensagem']}")
     print(f"Item em leilão: {dados['item']}")
-    print(f"Lance inicial:  R$ {dados['lance_inicial']:.2f}")
-    print(f"\nComandos: :item | :tempo | :quit | ou digite um valor para dar um lance\n")
+    print(f"Lance atual:    R$ {dados['lance_atual']:.2f}")
+    print(f"\nComandos: :item | :tempo | :vender <item> | :lance <item> <valor> | :quit\n")
 
-    # Dispara as duas threads
-    t1 = threading.Thread(target=thread_input, args=(sock,))
+    # Dispara as threads passando o nome
+    t1 = threading.Thread(target=thread_input, args=(sock, nome))
     t2 = threading.Thread(target=thread_recepcao, args=(sock,))
     t1.daemon = True
     t2.daemon = True
@@ -118,7 +147,6 @@ def main():
 
     t1.join()
     t2.join()
-
     sock.close()
 
 if __name__ == "__main__":
