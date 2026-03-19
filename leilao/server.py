@@ -3,161 +3,281 @@ import threading
 import time
 from datetime import datetime
 from protocolo import enviar, receber
-from banco import buscar_ou_criar, atualizar, carregar
+from banco import buscar_ou_criar, atualizar
+from args import obter_args
 
-# Variáveis globais (memória compartilhada)
-lance_atual = 1000.0
-nome_item = "Banana"
+# Memória Compartilhada 
+leilao = {
+    "item": "Relógio Vintage",
+    "lance_atual": 1000.0,
+    "lance_lider": None,  # nome do usuário com o maior lance
+}
 tempo_restante = 60
-cliente_ativo = True
-lock = threading.Lock()  # Protege acesso simultâneo
+clientes = {}       # {"joao": conn, "maria": conn}
+usuarios = {}       # {"joao": {...}, "maria": {...}}
+lock = threading.Lock()
 
+# Broadcast 
+def broadcast(tipo, dados, exceto=None):
+    """Envia mensagem para todos os clientes conectados"""
+    with lock:
+        for nome, conn in clientes.items():
+            if nome != exceto:
+                try:
+                    enviar(conn, tipo, dados)
+                except:
+                    pass  # cliente desconectado
+
+# Identificação
 def identificar_cliente(conn):
-    # Pede o nome ao cliente
     enviar(conn, "identificacao", {"mensagem": "Digite seu nome de usuário:"})
-
-    # Recebe o nome
     msg = receber(conn)
     nome = msg["dados"]["nome"].strip()
-
-    # Busca ou cria no banco
     usuario, novo = buscar_ou_criar(nome)
-
-    # Responde com os dados do usuário
     enviar(conn, "identificacao", {
         "novo": novo,
         "saldo": usuario["saldo"],
         "itens": usuario["itens"]
     })
-
     return nome, usuario
 
-def thread_lances(conn):
-    global lance_atual
+# Thread 1 — Lances e comandos
+def thread_lances(conn, nome):
     global tempo_restante
-    global cliente_ativo
 
     while True:
         try:
             mensagem = receber(conn)
-
-            # Se receber None o cliente desconectou
             if not mensagem:
-                print("Cliente desconectado")
-                with lock:
-                    cliente_ativo = False
+                print(f"[{nome}] Desconectado")
                 break
+
             tipo  = mensagem["tipo"]
             dados = mensagem["dados"]
 
-            # É um lance 
             if tipo == "lance":
-                valor = float(dados["valor"])
+                processar_lance(conn, nome, dados)
 
-                with lock:
-                    if valor > lance_atual:
-                        lance_atual = valor
-                        tempo_restante = 60  # Reseta o cronômetro para 60 segundos a cada lance válido
-                        enviar(conn, "eco", {"acao": f"Lance de R$ {valor:.2f} aceito!"})
-                        enviar(conn, "lance", {"valor": lance_atual})
-                        enviar(conn, "tempo", {"mensagem": f"Tempo resetado para 60s!"})
-                    else:
-                        enviar(conn, "erro", {
-                            "mensagem": f"Lance inválido! O atual é R$ {lance_atual:.2f}"
-                        })
-
-            # É um comando
             elif tipo == "comando":
-                cmd = dados["comando"]
-
-                if cmd == ":item":
-                    with lock:
-                        enviar(conn, "info", {
-                            "item": nome_item,
-                            "lance_atual": lance_atual
-                        })
-
-                elif cmd == ":tempo":
-                    with lock:
-                        enviar(conn, "info", {
-                            "tempo_restante": tempo_restante
-                        })
-
-                elif cmd == ":quit":
-                    with lock:
-                        cliente_ativo = False
-                    enviar(conn, "info", {"mensagem": "Até logo!"})
-                    print("Cliente saiu com :quit")
-                    break
+                processar_comando(conn, nome, dados)
 
         except Exception as e:
-            print(f"Erro na thread de lances: {e}")
+            print(f"Erro na thread de lances [{nome}]: {e}")
             break
-    
 
-def thread_cronometro(conn):
+    # Remove o cliente ao desconectar
+    with lock:
+        clientes.pop(nome, None)
+        usuarios.pop(nome, None)
+
+
+def processar_lance(conn, nome, dados):
     global tempo_restante
-    global cliente_ativo
+
+    item  = dados.get("item")
+    valor = float(dados.get("valor", 0))
+
+    with lock:
+        usuario = usuarios[nome]
+
+        # Validações
+        if item != leilao["item"]:
+            enviar(conn, "erro", {"mensagem": f"Item '{item}' não está em leilão!"})
+            return
+
+        if valor <= leilao["lance_atual"]:
+            enviar(conn, "erro", {"mensagem": f"Lance inválido! O atual é R$ {leilao['lance_atual']:.2f}"})
+            return
+
+        saldo_disponivel = usuario["saldo"] - usuario["bloqueado"]
+        if valor > saldo_disponivel:
+            enviar(conn, "erro", {"mensagem": f"Saldo insuficiente! Disponível: R$ {saldo_disponivel:.2f}"})
+            return
+
+        # Devolve o bloqueio do líder anterior
+        lider_anterior = leilao["lance_lider"]
+        if lider_anterior and lider_anterior in usuarios:
+            usuarios[lider_anterior]["bloqueado"] -= leilao["lance_atual"]
+
+        # Bloqueia o valor do novo lance
+        usuario["bloqueado"] += valor
+        leilao["lance_atual"] = valor
+        leilao["lance_lider"] = nome
+        tempo_restante = 60  # reseta o cronômetro
+
+    # Eco para quem deu o lance
+    enviar(conn, "eco", {"acao": f":lance {item} R$ {valor:.2f}"})
+
+    # Broadcast para todos
+    for n, c in clientes.items():
+        try:
+            enviar(c, "lance", {
+                "item": leilao["item"],
+                "valor": leilao["lance_atual"],
+                "lider": leilao["lance_lider"]
+            })
+        except:
+            pass
+
+
+def processar_comando(conn, nome, dados):
+    cmd = dados["comando"]
+
+    if cmd == ":item":
+        with lock:
+            enviar(conn, "info", {
+                "item": leilao["item"],
+                "lance_atual": leilao["lance_atual"],
+                "lider": leilao["lance_lider"]
+            })
+
+    elif cmd == ":tempo":
+        with lock:
+            enviar(conn, "info", {"tempo_restante": tempo_restante})
+
+    elif cmd.startswith(":vender"):
+        processar_venda(conn, nome, cmd)
+
+    elif cmd == ":quit":
+        enviar(conn, "info", {"mensagem": "Até logo!"})
+        atualizar(nome, usuarios[nome])
+        print(f"[{nome}] Saiu com :quit")
+        raise Exception("quit")
+
+    else:
+        enviar(conn, "erro", {"mensagem": f"Comando desconhecido: {cmd}"})
+
+
+def processar_venda(conn, nome, cmd):
+    partes = cmd.split()
+    if len(partes) < 2:
+        enviar(conn, "erro", {"mensagem": "Uso: :vender <item>"})
+        return
+
+    nome_item = " ".join(partes[1:])
+
+    with lock:
+        usuario = usuarios[nome]
+        item_encontrado = next(
+            (i for i in usuario["itens"] if i["nome"].lower() == nome_item.lower()), None
+        )
+
+        if not item_encontrado:
+            enviar(conn, "erro", {"mensagem": f"Você não possui o item '{nome_item}'"})
+            return
+
+        valor_venda = item_encontrado["valor_compra"] * 0.9
+        usuario["saldo"] += valor_venda
+        usuario["itens"].remove(item_encontrado)
+        atualizar(nome, usuario)
+
+    enviar(conn, "eco",  {"acao": f":vender {nome_item} por R$ {valor_venda:.2f}"})
+    enviar(conn, "info", {"mensagem": f"Item vendido! R$ {valor_venda:.2f} creditados."})
+
+
+# Thread 2 — Cronômetro
+def thread_cronometro():
+    global tempo_restante
 
     while True:
-        if not cliente_ativo:
-            break
         time.sleep(1)
-
         with lock:
             tempo_restante -= 1
 
-            # Avisa o cliente a cada 10 segundos
             if tempo_restante % 10 == 0 and tempo_restante > 0:
-                enviar(conn, "tempo", {
-                    "mensagem": f"Tempo restante: {tempo_restante}s"
-                })
+                for conn in clientes.values():
+                    try:
+                        enviar(conn, "tempo", {"mensagem": f"Tempo restante: {tempo_restante}s"})
+                    except:
+                        pass
 
-            # Avisa nos últimos 5 segundos
             if tempo_restante <= 5 and tempo_restante > 0:
-                enviar(conn, "alerta", {
-                    "mensagem": f"Encerrando em {tempo_restante}s!"
-                })
+                for conn in clientes.values():
+                    try:
+                        enviar(conn, "alerta", {"mensagem": f"Encerrando em {tempo_restante}s!"})
+                    except:
+                        pass
 
-            # Tempo esgotado
             if tempo_restante <= 0:
-                enviar(conn, "fim", {
-                    "mensagem": "Item Vendido!",
-                    "item": nome_item,
-                    "valor_final": lance_atual
-                })
+                encerrar_leilao()
                 break
-    
+
+
+def encerrar_leilao():
+    """Finaliza o leilão, debita o vencedor e salva no banco"""
+    lider = leilao["lance_lider"]
+
+    if lider and lider in usuarios:
+        vencedor = usuarios[lider]
+        vencedor["bloqueado"] -= leilao["lance_atual"]
+        vencedor["itens"].append({
+            "nome": leilao["item"],
+            "valor_compra": leilao["lance_atual"]
+        })
+        atualizar(lider, vencedor)
+
+    # Avisa todos
+    for conn in clientes.values():
+        try:
+            enviar(conn, "fim", {
+                "mensagem": "Item Vendido!",
+                "item": leilao["item"],
+                "valor_final": leilao["lance_atual"],
+                "vencedor": lider or "nenhum"
+            })
+        except:
+            pass
+
+
+# Main
 def main():
+    global tempo_restante
+    args = obter_args()
+    tempo_restante = args.tempo
+
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # Permite reutilizar o endereço imediatamente após fechar o servidor
-    servidor.bind(('localhost', 9999))
-    servidor.listen(1)
-    print("Servidor de leilão aguardando conexão...")
+    servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    servidor.bind(('localhost', args.porta))
+    servidor.listen(args.max)
+    print(f"Servidor rodando | porta: {args.porta} | max clientes: {args.max} | tempo: {args.tempo}s")
 
-    conn, endereco = servidor.accept()
-    print(f"Cliente conectado: {endereco}")
+    # Dispara o cronômetro global — uma única thread para todos
+    tc = threading.Thread(target=thread_cronometro)
+    tc.daemon = True
+    tc.start()
 
-    horario = datetime.now().strftime("%H:%M:%S")
-    enviar(conn, "conexao", {
-        "mensagem": "CONECTADO!!",
-        "horario": horario,
-        "item": nome_item,
-        "lance_inicial": lance_atual
-    })
+    while True:
+        conn, endereco = servidor.accept()
+        print(f"Nova conexão: {endereco}")
 
-    t1 = threading.Thread(target=thread_lances, args=(conn,))
-    t2 = threading.Thread(target=thread_cronometro, args=(conn,))
-    t1.daemon = True # Permite que a thread seja finalizada automaticamente quando o programa terminar
-    t2.daemon = True  
-    t1.start()
-    t2.start()  
+        with lock:
+            if len(clientes) >= args.max:
+                enviar(conn, "erro", {"mensagem": "Servidor lotado! Tente mais tarde."})
+                conn.close()
+                continue
 
-    t1.join()
-    t2.join()
+        # Identificação
+        nome, usuario = identificar_cliente(conn)
+        print(f"[{nome}] Identificado")
 
-    conn.close()
-    servidor.close()
+        with lock:
+            clientes[nome] = conn
+            usuarios[nome] = usuario
+
+        # Envia boas vindas com dados do leilão
+        horario = datetime.now().strftime("%H:%M:%S")
+        enviar(conn, "conexao", {
+            "mensagem": "CONECTADO!!",
+            "horario": horario,
+            "item": leilao["item"],
+            "lance_atual": leilao["lance_atual"],
+            "tempo_restante": tempo_restante
+        })
+
+        # Dispara as 2 threads dedicadas para este cliente
+        t1 = threading.Thread(target=thread_lances, args=(conn, nome))
+        t1.daemon = True
+        t1.start()
 
 if __name__ == "__main__":
     main()
