@@ -23,7 +23,7 @@ def broadcast(tipo, dados, exceto=None):
     with lock:
         for nome, conn in clientes.items():
             if nome != exceto:
-                try:
+                try: 
                     enviar(conn, tipo, dados)
                 except:
                     pass  # cliente desconectado
@@ -31,9 +31,9 @@ def broadcast(tipo, dados, exceto=None):
 # Identificação
 def identificar_cliente(conn):
     enviar(conn, "identificacao", {"mensagem": "Digite seu nome de usuário:"})
-    msg = receber(conn)
+    msg = receber(conn) 
     nome = msg["dados"]["nome"].strip()
-    usuario, novo = buscar_ou_criar(nome)
+    usuario, novo = buscar_ou_criar(nome) 
     enviar(conn, "identificacao", {
         "novo": novo,
         "saldo": usuario["saldo"],
@@ -50,6 +50,12 @@ def thread_lances(conn, nome):
             mensagem = receber(conn)
             if not mensagem:
                 print(f"[{nome}] Desconectado")
+                with lock:
+                # Devolve o bloqueio se era o líder
+                    if leilao["lance_lider"] == nome:
+                        leilao["lance_lider"] = None
+                        leilao["lance_atual"] = 1000.0  # volta ao inicial
+                    atualizar(nome, usuarios[nome])  # salva no banco
                 break
 
             tipo  = mensagem["tipo"]
@@ -67,8 +73,8 @@ def thread_lances(conn, nome):
 
     # Remove o cliente ao desconectar
     with lock:
-        clientes.pop(nome, None)
-        usuarios.pop(nome, None)
+        clientes.pop(nome, None) 
+        usuarios.pop(nome, None) 
 
 
 def processar_lance(conn, nome, dados):
@@ -103,7 +109,7 @@ def processar_lance(conn, nome, dados):
         usuario["bloqueado"] += valor
         leilao["lance_atual"] = valor
         leilao["lance_lider"] = nome
-        tempo_restante = 60  # reseta o cronômetro
+        tempo_restante = tempo_inicial  # reseta o cronômetro
 
     # Eco para quem deu o lance
     enviar(conn, "eco", {"acao": f":lance {item} R$ {valor:.2f}"})
@@ -158,9 +164,12 @@ def processar_venda(conn, nome, cmd):
 
     with lock:
         usuario = usuarios[nome]
-        item_encontrado = next(
-            (i for i in usuario["itens"] if i["nome"].lower() == nome_item.lower()), None
-        )
+        item_encontrado = None  # começa como None
+
+        for i in usuario["itens"]:
+            if i["nome"].lower() == nome_item.lower():
+                item_encontrado = i
+                break  # para ao encontrar
 
         if not item_encontrado:
             enviar(conn, "erro", {"mensagem": f"Você não possui o item '{nome_item}'"})
@@ -231,9 +240,10 @@ def encerrar_leilao():
 
 # Main
 def main():
-    global tempo_restante
+    global tempo_restante, tempo_inicial
     args = obter_args()
     tempo_restante = args.tempo
+    tempo_inicial = args.tempo
 
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

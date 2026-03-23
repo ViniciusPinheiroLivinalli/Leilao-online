@@ -3,7 +3,7 @@ import os
 
 ARQUIVO = "banco.json" # Arquivo onde os dados dos usuários serão armazenados
 
-# Estrutura padrão de um novo usuário
+# Estrutura padrão de um usuário
 def novo_usuario():
     return {
         "saldo": 5000.0,
