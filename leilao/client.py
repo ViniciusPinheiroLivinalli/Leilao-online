@@ -2,7 +2,7 @@ import socket
 import threading
 from protocolo import enviar, receber
 
-leilao_atual = "?"
+leilao_atual = "?" # variável global para armazenar o item atual do leilão
 
 # Identificação 
 def identificar(sock):
