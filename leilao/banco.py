@@ -11,19 +11,17 @@ def novo_usuario():
         "itens": []  # [{"nome": "Banana", "valor_compra": 1000.0}]
     }
 
-# Carrega o banco do disco 
 def carregar():
     if not os.path.exists(ARQUIVO):
         return {}  # banco vazio se arquivo não existe ainda
-    with open(ARQUIVO, "r", encoding="utf-8") as f:
+    with open(ARQUIVO, "r", encoding="utf-8") as f: # reading mode, utf-8 encoding
         return json.load(f)
 
-# Salva o banco no disco
 def salvar(banco):
-    with open(ARQUIVO, "w", encoding="utf-8") as f:
-        json.dump(banco, f, indent=4, ensure_ascii=False)
+    with open(ARQUIVO, "w", encoding="utf-8") as f: # writing mode, utf-8 encoding
+        json.dump(banco, f, indent=4, ensure_ascii=False) # indent=4 para legibilidade, ensure_ascii=False para suportar caracteres acentuados
 
-# Busca ou cria um usuário
+# Buscar ou criar um usuário
 def buscar_ou_criar(nome):
     banco = carregar()
     novo = False

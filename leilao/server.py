@@ -5,6 +5,8 @@ from datetime import datetime
 from protocolo import enviar, receber
 from banco import buscar_ou_criar, atualizar
 from args import obter_args
+import signal
+import sys
 
 # Memória Compartilhada 
 leilao = {
@@ -13,13 +15,42 @@ leilao = {
     "lance_lider": None,  # nome do usuário com o maior lance
 }
 tempo_restante = 60
-clientes = {}       # {"joao": conn, "maria": conn}
-usuarios = {}       # {"joao": {...}, "maria": {...}}
-lock = threading.Lock()
+clientes = {}       # conexões ativas {"joao": conn, "maria": conn} 
+usuarios = {}       # dados do usuário (saldo, itens, bloqueado) {"joao": {...}, "maria": {...}} 
+lock = threading.Lock() # para sincronizar acesso a clientes, usuarios e leilao
+servidor_ativo = threading.Event() # para controlar o estado do servidor (ativo ou encerrado)
+servidor_ativo.set()  # começa ativo
+
+# Encerramento seguro com CTRL+C
+def encerrar_servidor(sig, frame):
+    print("\n\n  Servidor interrompido! Salvando dados...")
+    servidor_ativo.clear() # sinaliza para threads que o servidor está encerrado
+
+    with lock:
+        # Salva todos os usuários ativos no banco
+        for nome, dados in usuarios.items():
+            try:
+                # Devolve bloqueios pendentes antes de salvar
+                dados["saldo"] += dados["bloqueado"]
+                dados["bloqueado"] = 0.0
+                atualizar(nome, dados)
+                print(f" [{nome}] salvo — saldo: R$ {dados['saldo']:.2f}")
+            except Exception as e:
+                print(f" [{nome}] erro ao salvar: {e}")
+
+        # Avisa todos os clientes conectados
+        for nome, conn in clientes.items():
+            try:
+                enviar(conn, "erro", {"mensagem": "Servidor encerrado pelo administrador."})
+                conn.close()
+            except:
+                pass
+
+    print(" Dados salvos! Encerrando...")
+    sys.exit(0)
 
 # Broadcast 
-def broadcast(tipo, dados, exceto=None):
-    """Envia mensagem para todos os clientes conectados"""
+def broadcast(tipo, dados, exceto=None): # envia para todos, exceto o nome em exceto
     with lock:
         for nome, conn in clientes.items():
             if nome != exceto:
@@ -31,9 +62,9 @@ def broadcast(tipo, dados, exceto=None):
 # Identificação
 def identificar_cliente(conn):
     enviar(conn, "identificacao", {"mensagem": "Digite seu nome de usuário:"})
-    msg = receber(conn) 
+    msg = receber(conn) # ex: {"tipo": "identificacao", "dados": {"nome": "joao"}}
     nome = msg["dados"]["nome"].strip()
-    usuario, novo = buscar_ou_criar(nome) 
+    usuario, novo = buscar_ou_criar(nome) # ex: {"saldo": 5000.0, "itens": [], "bloqueado": 0.0}, True/False
     enviar(conn, "identificacao", {
         "novo": novo,
         "saldo": usuario["saldo"],
@@ -45,36 +76,59 @@ def identificar_cliente(conn):
 def thread_lances(conn, nome):
     global tempo_restante
 
-    while True:
-        try:
-            mensagem = receber(conn)
-            if not mensagem:
-                print(f"[{nome}] Desconectado")
-                with lock:
-                # Devolve o bloqueio se era o líder
-                    if leilao["lance_lider"] == nome:
-                        leilao["lance_lider"] = None
-                        leilao["lance_atual"] = 1000.0  # volta ao inicial
-                    atualizar(nome, usuarios[nome])  # salva no banco
+    try:
+        while True:
+            try:
+                mensagem = receber(conn)
+
+                if not mensagem:
+                    raise ConnectionError("Cliente desconectou sem :quit")
+
+                tipo  = mensagem["tipo"]
+                dados = mensagem["dados"]
+
+                if tipo == "lance":
+                    processar_lance(conn, nome, dados)
+                elif tipo == "comando":
+                    resultado = processar_comando(conn, nome, dados)
+                    if resultado == "quit": 
+                        print(f"[{nome}] Saiu com :quit")
+                        break  # sai do while limpo, sem exception
+
+            except ConnectionError as e:
+                print(f"[{nome}] Desconexão: {e}")
+                break
+            except OSError:
+                print(f"[{nome}] Conexão perdida abruptamente")
                 break
 
-            tipo  = mensagem["tipo"]
-            dados = mensagem["dados"]
+    finally: # SEMPRE executa — com erro ou sem erro
+        with lock:
+            try:
+                # Devolve bloqueio se era o líder
+                if leilao["lance_lider"] == nome:
+                    leilao["lance_lider"] = None
+                    leilao["lance_atual"] = 1000.0
 
-            if tipo == "lance":
-                processar_lance(conn, nome, dados)
+                # Salva no banco
+                if nome in usuarios:
+                    atualizar(nome, usuarios[nome])
+                    print(f"[{nome}] Dados salvos")
 
-            elif tipo == "comando":
-                processar_comando(conn, nome, dados)
+                # Remove da memória
+                clientes.pop(nome, None)
+                usuarios.pop(nome, None)
 
-        except Exception as e:
-            print(f"Erro na thread de lances [{nome}]: {e}")
-            break
+            except Exception as e:
+                print(f"[{nome}] Erro ao limpar conexão: {e}")
 
-    # Remove o cliente ao desconectar
-    with lock:
-        clientes.pop(nome, None) 
-        usuarios.pop(nome, None) 
+        # Fecha a conexão
+        try:
+            conn.close()
+        except:
+            pass
+
+        print(f"[{nome}] Desconectado — clientes ativos: {len(clientes)}")
 
 
 def processar_lance(conn, nome, dados):
@@ -146,9 +200,7 @@ def processar_comando(conn, nome, dados):
 
     elif cmd == ":quit":
         enviar(conn, "info", {"mensagem": "Até logo!"})
-        atualizar(nome, usuarios[nome])
-        print(f"[{nome}] Saiu com :quit")
-        raise Exception("quit")
+        return "quit"
 
     else:
         enviar(conn, "erro", {"mensagem": f"Comando desconhecido: {cmd}"})
@@ -188,7 +240,7 @@ def processar_venda(conn, nome, cmd):
 def thread_cronometro():
     global tempo_restante
 
-    while True:
+    while servidor_ativo.is_set():
         time.sleep(1)
         with lock:
             tempo_restante -= 1
@@ -243,7 +295,9 @@ def main():
     global tempo_restante, tempo_inicial
     args = obter_args()
     tempo_restante = args.tempo
-    tempo_inicial = args.tempo
+    tempo_inicial  = args.tempo
+
+    signal.signal(signal.SIGINT, encerrar_servidor)
 
     servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -251,43 +305,74 @@ def main():
     servidor.listen(args.max)
     print(f"Servidor rodando | porta: {args.porta} | max clientes: {args.max} | tempo: {args.tempo}s")
 
-    # Dispara o cronômetro global — uma única thread para todos
+    # Cronômetro global
     tc = threading.Thread(target=thread_cronometro)
     tc.daemon = True
     tc.start()
 
     while True:
-        conn, endereco = servidor.accept()
-        print(f"Nova conexão: {endereco}")
+        try:
+            conn, endereco = servidor.accept()
+            print(f"Nova conexão: {endereco}")
 
+        except OSError:
+            # Servidor foi fechado pelo CTRL+C
+            print("Servidor encerrado.")
+            break
+
+        # Verifica limite de conexões
         with lock:
-            if len(clientes) >= args.max:
-                enviar(conn, "erro", {"mensagem": "Servidor lotado! Tente mais tarde."})
+            total_ativos = len(clientes)
+
+        if total_ativos >= args.max:
+            try:
+                enviar(conn, "erro", {"mensagem": f"Servidor lotado! Limite de {args.max} conexões atingido."})
                 conn.close()
-                continue
+            except:
+                pass
+            print(f"Conexão recusada — servidor lotado ({total_ativos}/{args.max})")
+            continue  # volta ao accept() sem encerrar o servidor
 
-        # Identificação
-        nome, usuario = identificar_cliente(conn)
-        print(f"[{nome}] Identificado")
+        # Identificação em try/except — cliente pode cair durante o processo
+        try:
+            nome, usuario = identificar_cliente(conn)
+            print(f"[{nome}] Identificado ({total_ativos + 1}/{args.max})")
+        except Exception as e:
+            print(f"Erro na identificação: {e}")
+            try:
+                conn.close()
+            except:
+                pass
+            continue  # volta ao accept()
 
+        # Registra o cliente na memória
         with lock:
             clientes[nome] = conn
             usuarios[nome] = usuario
 
-        # Envia boas vindas com dados do leilão
-        horario = datetime.now().strftime("%H:%M:%S")
-        enviar(conn, "conexao", {
-            "mensagem": "CONECTADO!!",
-            "horario": horario,
-            "item": leilao["item"],
-            "lance_atual": leilao["lance_atual"],
-            "tempo_restante": tempo_restante
-        })
+        # Envia boas vindas
+        try:
+            horario = datetime.now().strftime("%H:%M:%S")
+            enviar(conn, "conexao", {
+                "mensagem": "CONECTADO!!",
+                "horario": horario,
+                "item": leilao["item"],
+                "lance_atual": leilao["lance_atual"],
+                "tempo_restante": tempo_restante
+            })
+        except Exception as e:
+            print(f"[{nome}] Erro ao enviar boas vindas: {e}")
+            with lock:
+                clientes.pop(nome, None)
+                usuarios.pop(nome, None)
+            continue
 
-        # Dispara as 2 threads dedicadas para este cliente
+        # Dispara thread dedicada para este cliente
         t1 = threading.Thread(target=thread_lances, args=(conn, nome))
         t1.daemon = True
         t1.start()
+
+    servidor.close()
 
 if __name__ == "__main__":
     main()

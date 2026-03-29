@@ -28,5 +28,20 @@
         "saldo": 5000.0,
         "bloqueado": 0.0,
         "itens": []
+    },
+    "joao": {
+        "saldo": 5000.0,
+        "bloqueado": 1500.0,
+        "itens": []
+    },
+    "maria": {
+        "saldo": 5000.0,
+        "bloqueado": 0.0,
+        "itens": []
+    },
+    "jose": {
+        "saldo": 5000.0,
+        "bloqueado": 2000.0,
+        "itens": []
     }
 }

@@ -1,13 +1,13 @@
 import argparse
 
 def obter_args():
-    parser = argparse.ArgumentParser(description="Servidor de Leilão Online")
+    parser = argparse.ArgumentParser(description="Servidor de Leilão Online") # argparse para lidar com argumentos de linha de comando no formato --arg valor
 
     parser.add_argument(
         "--max",
         type=int,
         default=3,
-        help="Número máximo de conexões simultâneas (padrão: 3)"
+        help="Número máximo de conexões simultâneas (padrão: 3)" # chama help digitando python server.py --help
     )
 
     parser.add_argument(
