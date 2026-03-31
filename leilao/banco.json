@@ -11,7 +11,7 @@
     },
     "yuri": {
         "saldo": 5000.0,
-        "bloqueado": 0.0,
+        "bloqueado": 2000.0,
         "itens": []
     },
     "vinicius": {
@@ -42,6 +42,11 @@
     "jose": {
         "saldo": 5000.0,
         "bloqueado": 2000.0,
+        "itens": []
+    },
+    "vini": {
+        "saldo": 5000.0,
+        "bloqueado": 0.0,
         "itens": []
     }
 }

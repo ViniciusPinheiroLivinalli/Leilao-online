@@ -21,7 +21,6 @@ lock = threading.Lock() # para sincronizar acesso a clientes, usuarios e leilao
 servidor_ativo = threading.Event() # para controlar o estado do servidor (ativo ou encerrado)
 servidor_ativo.set()  # começa ativo
 
-# Encerramento seguro com CTRL+C
 def encerrar_servidor(sig, frame):
     print("\n\n  Servidor interrompido! Salvando dados...")
     servidor_ativo.clear() # sinaliza para threads que o servidor está encerrado
@@ -48,16 +47,6 @@ def encerrar_servidor(sig, frame):
 
     print(" Dados salvos! Encerrando...")
     sys.exit(0)
-
-# Broadcast 
-def broadcast(tipo, dados, exceto=None): # envia para todos, exceto o nome em exceto
-    with lock:
-        for nome, conn in clientes.items():
-            if nome != exceto:
-                try: 
-                    enviar(conn, tipo, dados)
-                except:
-                    pass  # cliente desconectado
 
 # Identificação
 def identificar_cliente(conn):
